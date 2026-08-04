@@ -1,9 +1,19 @@
 param(
     [int]$NodeCount = 56,
     [switch]$RunWandb = $true,
-    [string]$PythonExecutable = 'python',
+    [string]$PythonExecutable = '',
     [string[]]$ExtraArgs = @()
 )
+
+if (-not $PythonExecutable) {
+    $venvPython = Join-Path $PSScriptRoot '..\\.venv\\Scripts\\python.exe'
+    if (Test-Path $venvPython) {
+        $PythonExecutable = $venvPython
+    }
+    else {
+        $PythonExecutable = 'python'
+    }
+}
 
 $arguments = @('main.py', '--n_nodes', $NodeCount)
 

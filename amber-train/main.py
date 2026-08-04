@@ -2,9 +2,9 @@ from datetime import datetime
 from pytz import timezone
 import time
 from functools import partial
-import wandb
 import glob
 import os
+import sys
 import fire
 import tqdm
 import torch
@@ -29,7 +29,10 @@ MODEL_NAME = 'amber-pico'
 PROJECT_NAME = 'amber'
 RUN_NAME = f'pretraining_{MODEL_NAME}_{DATE}'
 HF_MODEL_NAME_OR_PATH = 'huggyllama/llama-7b'
+LOCAL_DEBUG_MODEL_NAME_OR_PATH = 'huggyllama/llama-160m'
 WORKDIR = f'workdir_{MODEL_NAME}'
+
+wandb = None
 
 LEARNING_RATE = 3e-4
 LR_SCHEDULE_TYPE = 'cosine'
@@ -53,6 +56,40 @@ def collate_fn(examples, device):
     token_ids = torch.tensor(
         [example['token_ids'] for example in examples], device=device)
     return {'input_ids': token_ids[:, :-1], 'labels': token_ids[:, 1:]}
+
+
+def get_gpu_memory_gb(device_idx=0):
+    if not torch.cuda.is_available():
+        return None
+    device_properties = torch.cuda.get_device_properties(device_idx)
+    return device_properties.total_memory / (1024 ** 3)
+
+
+def validate_cuda_environment(accelerator, model_name_or_path, n_devices_per_node):
+    if accelerator != 'cuda':
+        return
+
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            'CUDA was requested but is not available in the current Python '
+            f'environment. interpreter={sys.executable}, '
+            f'torch={torch.__version__}, torch.version.cuda={torch.version.cuda}. '
+            'Use the project virtual environment Python or install a '
+            'CUDA-enabled PyTorch build.'
+        )
+
+    total_memory_gb = get_gpu_memory_gb()
+    using_default_7b = model_name_or_path == HF_MODEL_NAME_OR_PATH
+    if total_memory_gb is None:
+        return
+
+    if n_devices_per_node == 1 and using_default_7b and total_memory_gb < 16:
+        raise RuntimeError(
+            f'The default model {HF_MODEL_NAME_OR_PATH} is too large for a '
+            f'single GPU with {total_memory_gb:.1f} GB VRAM and will OOM '
+            'before training starts. For local Windows/RTX 3070 validation, '
+            f'use --model_name_or_path {LOCAL_DEBUG_MODEL_NAME_OR_PATH} instead.'
+        )
 
 
 def train_chunk(fabric,
@@ -130,6 +167,18 @@ def main(n_nodes=1,
          accelerator=None,
          precision=None,
          model_name_or_path=HF_MODEL_NAME_OR_PATH):
+    global wandb
+
+    if run_wandb and wandb is None:
+        try:
+            import wandb as wandb_module
+        except ImportError as exc:
+            raise ImportError(
+                'wandb is required when run_wandb=True. '
+                'Install it with "pip install wandb" or set run_wandb=False.'
+            ) from exc
+        wandb = wandb_module
+
     if n_chunks is None:
         n_chunks = len(glob.glob(f'{data_dir}/train_*.jsonl'))
     if examples_per_chunk is None:
@@ -141,8 +190,16 @@ def main(n_nodes=1,
     if precision is None:
         precision = 'bf16-mixed' if accelerator == 'cuda' else '32-true'
 
+    validate_cuda_environment(
+        accelerator=accelerator,
+        model_name_or_path=model_name_or_path,
+        n_devices_per_node=n_devices_per_node)
+
+    devices = n_devices_per_node if accelerator == 'cuda' else 1
+    use_fsdp = accelerator == 'cuda' and devices > 1 and os.name != 'nt'
+
     strategy = None
-    if accelerator == 'cuda':
+    if use_fsdp:
         strategy = FSDPStrategy(
             auto_wrap_policy=partial(
                 transformer_auto_wrap_policy,
@@ -150,8 +207,6 @@ def main(n_nodes=1,
             activation_checkpointing_policy={LlamaDecoderLayer},
             cpu_offload=True,
             limit_all_gathers=True)
-
-    devices = n_devices_per_node if accelerator == 'cuda' else 1
 
     fabric_kwargs = dict(
         accelerator=accelerator,

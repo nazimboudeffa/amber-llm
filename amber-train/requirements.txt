@@ -1,3 +1,4 @@
+# Install a CUDA-enabled PyTorch build separately if you want GPU training.
 torch>=2.1.1
 lightning>=2.1.2
 flash_attn>=2.3.3; platform_system != "Windows"
@@ -6,4 +7,5 @@ fire
 pytz
 tqdm
 numpy
-wandb
+# Optional: install wandb to enable --run_wandb True.
+# wandb>=0.28.1

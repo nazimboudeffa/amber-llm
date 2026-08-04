@@ -72,16 +72,18 @@ cd ../../amber-train
 python main.py \
   --n_nodes 1 \
   --n_devices_per_node 1 \
-  --per_device_batch_size 2 \
-  --accumulate_grad_batches 8 \
+  --per_device_batch_size 1 \
+  --accumulate_grad_batches 16 \
   --accelerator cuda \
   --precision "bf16-mixed" \
+  --model_name_or_path huggyllama/llama-160m \
   --data_dir ../amber-data-prep/redpajama_tiny/merged/train \
   --run_wandb False
 ```
 
-> `per_device_batch_size 2` est volontairement bas pour tenir dans les 8 Go de VRAM.  
-> `accumulate_grad_batches 8` simule un batch effectif de 16.
+> Une RTX 3070 8 Go ne peut pas entraîner `huggyllama/llama-7b` dans ce pipeline: le modèle OOM avant le premier step.
+> Pour une validation locale réaliste, utilisez `huggyllama/llama-160m` avec un micro-batch de 1.
+> `accumulate_grad_batches 16` simule un batch effectif de 16.
 
 ---
 
@@ -101,6 +103,7 @@ amber-data-prep/
 
 ## Notes
 
-- Le modèle de base utilisé est `huggyllama/llama-7b` (~13 Go), téléchargé automatiquement par HuggingFace lors du premier lancement de `main.py`.
+- Le modèle 7B par défaut sert aux runs multi-GPU plus gros; il n'est pas réaliste sur une RTX 3070 8 Go.
+- Pour un run local, `huggyllama/llama-160m` garde la même famille de tokenizer/config et permet de valider le pipeline sans OOM immédiat.
 - Les checkpoints sont sauvegardés dans `amber-train/workdir_amber-pico/`.
 - Pour reprendre un entraînement interrompu, relancer simplement la même commande : le script détecte automatiquement le dernier checkpoint.
