@@ -3,6 +3,7 @@ from pytz import timezone
 import time
 from functools import partial
 import wandb
+import glob
 import os
 import fire
 import tqdm
@@ -24,11 +25,11 @@ from main_utils import (
 
 TIMEZONE = timezone('EST')
 DATE = str(datetime.now(tz=TIMEZONE)).split()[0]
-MODEL_SIZE = '7b'
-PROJECT_NAME = f'amber_{MODEL_SIZE}'
-RUN_NAME = f'pretraining_{MODEL_SIZE}_{DATE}'
-HF_MODEL_NAME_OR_PATH = f'huggyllama/llama-{MODEL_SIZE}'
-WORKDIR = f'workdir_{MODEL_SIZE}'
+MODEL_NAME = 'amber-pico'
+PROJECT_NAME = 'amber'
+RUN_NAME = f'pretraining_{MODEL_NAME}_{DATE}'
+HF_MODEL_NAME_OR_PATH = 'huggyllama/llama-7b'
+WORKDIR = f'workdir_{MODEL_NAME}'
 
 LEARNING_RATE = 3e-4
 LR_SCHEDULE_TYPE = 'cosine'
@@ -38,13 +39,14 @@ GRAD_NORM_CLIP = 1.
 WEIGHT_DECAY = 0.1
 BETA1 = 0.9
 BETA2 = 0.95
-ACCELERATOR = 'cuda'
-PRECISION = 'bf16-mixed'
 RANDOM_SEED = 11111
-
 TRAIN_DATA_DIR = './data'
 TRAIN_EXAMPLES_PER_CHUNK = 1706976
 N_CHUNKS = 360
+
+TINY_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    '..', 'amber-data-prep', 'redpajama_tiny', 'merged', 'train')
 
 
 def collate_fn(examples, device):
@@ -120,19 +122,46 @@ def main(n_nodes=1,
          n_devices_per_node=4,
          per_device_batch_size=10,
          accumulate_grad_batches=1,
-         run_wandb=False):
-    fabric = L.Fabric(
-        accelerator=ACCELERATOR,
-        num_nodes=n_nodes,
-        devices=n_devices_per_node,
-        precision=PRECISION,
-        strategy=FSDPStrategy(
+         run_wandb=False,
+         data_dir=TINY_DATA_DIR,
+         n_chunks=None,
+         examples_per_chunk=None,
+         warmup_grad_steps=None,
+         accelerator=None,
+         precision=None,
+         model_name_or_path=HF_MODEL_NAME_OR_PATH):
+    if n_chunks is None:
+        n_chunks = len(glob.glob(f'{data_dir}/train_*.jsonl'))
+    if examples_per_chunk is None:
+        with open(f'{data_dir}/train_0.jsonl') as fin:
+            examples_per_chunk = sum(1 for _ in fin)
+
+    if accelerator is None:
+        accelerator = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if precision is None:
+        precision = 'bf16-mixed' if accelerator == 'cuda' else '32-true'
+
+    strategy = None
+    if accelerator == 'cuda':
+        strategy = FSDPStrategy(
             auto_wrap_policy=partial(
                 transformer_auto_wrap_policy,
                 transformer_layer_cls={LlamaDecoderLayer}),
             activation_checkpointing_policy={LlamaDecoderLayer},
             cpu_offload=True,
-            limit_all_gathers=True))
+            limit_all_gathers=True)
+
+    devices = n_devices_per_node if accelerator == 'cuda' else 1
+
+    fabric_kwargs = dict(
+        accelerator=accelerator,
+        num_nodes=n_nodes if accelerator == 'cuda' else 1,
+        devices=devices,
+        precision=precision)
+    if strategy is not None:
+        fabric_kwargs['strategy'] = strategy
+
+    fabric = L.Fabric(**fabric_kwargs)
     fabric.launch()
 
     if fabric.global_rank == 0:
@@ -142,10 +171,15 @@ def main(n_nodes=1,
 
     last_ckpt_idx = get_last_ckpt_idx(workdir=WORKDIR)
     fabric.seed_everything(RANDOM_SEED + last_ckpt_idx + 1)
+    print(f'[amber-pico] accelerator={accelerator}, devices={devices}, '
+          f'precision={precision}, strategy={type(strategy).__name__ if strategy else None}', flush=True)
+    print(f'[amber-pico] loading model from {model_name_or_path} ...', flush=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_NAME_OR_PATH)
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     model = LlamaForCausalLM(
-        config=AutoConfig.from_pretrained(HF_MODEL_NAME_OR_PATH))
+        config=AutoConfig.from_pretrained(model_name_or_path))
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f'[amber-pico] model ready: {num_params / 1e6:.1f}M params', flush=True)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=LEARNING_RATE,
@@ -162,17 +196,22 @@ def main(n_nodes=1,
     torch.cuda.empty_cache()
 
     global_micro_batch_size = per_device_batch_size * fabric.world_size
-    total_steps = TRAIN_EXAMPLES_PER_CHUNK // global_micro_batch_size * N_CHUNKS
+    total_steps = examples_per_chunk // global_micro_batch_size * n_chunks
+    if warmup_grad_steps is None:
+        warmup_grad_steps = max(1, total_steps // 10)
     lr_schedule_fn = get_cosine_lr_decay_fn(
         total_steps=total_steps,
-        warmup_steps=WARMUP_GRAD_STEPS * accumulate_grad_batches,
+        warmup_steps=warmup_grad_steps * accumulate_grad_batches,
         learning_rate=LEARNING_RATE,
         end_learning_rate=END_LEARNING_RATE)
+    print(f'[amber-pico] data_dir={data_dir}, n_chunks={n_chunks}, '
+          f'examples_per_chunk={examples_per_chunk}, total_steps={total_steps}', flush=True)
 
-    for chunk_idx in range(last_ckpt_idx + 1, N_CHUNKS):
+    for chunk_idx in range(last_ckpt_idx + 1, n_chunks):
+        print(f'[amber-pico] loading chunk {chunk_idx}/{n_chunks} ...', flush=True)
         examples = load_jsonl_examples(
-            filename=f'{TRAIN_DATA_DIR}/train_{chunk_idx}.jsonl',
-            n_examples=TRAIN_EXAMPLES_PER_CHUNK,
+            filename=f'{data_dir}/train_{chunk_idx}.jsonl',
+            n_examples=examples_per_chunk,
             shuffle=True,
             global_micro_batch_size=global_micro_batch_size,
             global_rank=fabric.global_rank,
