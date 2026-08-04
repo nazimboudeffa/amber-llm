@@ -9,6 +9,9 @@ __pycache__/
 .ipynb_checkpoints/
 
 amber-data-prep/redpajama_v1/wikipedia/
+amber-data-prep/redpajama_tiny/datasets/
+amber-data-prep/redpajama_tiny/refined/
+amber-data-prep/redpajama_tiny/merged/
 
 Thumbs.db
 .DS_Store
