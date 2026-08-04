@@ -2,6 +2,10 @@
 
 From the original project https://github.com/LLM360
 
+Après avoir téléchargé les données et les travailler
+
+la suite est
+
 ```
 .\run.ps1 -NodeCount 1 -RunWandb:$false -ExtraArgs @('--n_devices_per_node','1','--per_device_batch_size','2','--accumulate_grad_batches','8','--accelerator','cuda','--precision','bf16-mixed','--data_dir','../amber-data-prep/redpajama_tiny/merged/train')
 ```
