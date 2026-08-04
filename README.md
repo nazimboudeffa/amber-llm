@@ -36,4 +36,4 @@ sur ma RTX 3070 ça marche toutjours pas
 
 et si je repasse sur un accelerator cpu ça bloque on dirait
 
-il faut donc partir sur runpod.io
+il faut donc partir sur runpod.io mais ne le faites pas y a que les experts qui le font
