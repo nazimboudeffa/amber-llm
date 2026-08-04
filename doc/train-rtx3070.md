@@ -1,0 +1,106 @@
+# Entraînement local sur RTX 3070
+
+Guide pas à pas pour lancer un entraînement **amber-pico** sur une machine locale équipée d'une RTX 3070 (8 Go VRAM) en utilisant le dataset **RedPajama Tiny**.
+
+---
+
+## Prérequis
+
+- Python 3.10+
+- CUDA 11.8 ou 12.1 installé
+- ~20 Go d'espace disque libre
+
+---
+
+## Étape 1 — Installer les dépendances
+
+```bash
+cd amber-train
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install lightning>=2.1.2 transformers>=4.36.2 fire pytz tqdm numpy wandb
+pip install flash-attn --no-build-isolation
+```
+
+> Si `flash-attn` échoue à la compilation, l'entraînement peut quand même fonctionner sans (performances légèrement réduites).
+
+---
+
+## Étape 2 — Télécharger les données tiny
+
+```bash
+cd amber-data-prep/redpajama_tiny
+python download.py --out_root datasets
+```
+
+Télécharge les fichiers `*_sample.jsonl` depuis HuggingFace (`severo/RedPajama-Tiny`).
+
+---
+
+## Étape 3 — Tokeniser les données
+
+```bash
+python refine.py \
+  --input_root datasets \
+  --out_root refined \
+  --tokenizer huggyllama/llama-7b \
+  --concat_tokens 2049
+```
+
+Le tokenizer `huggyllama/llama-7b` sera téléchargé automatiquement depuis HuggingFace (~500 Mo).  
+Chaque source (`arxiv`, `wikipedia`, etc.) sera tokenisée et sauvegardée dans `refined/<source>/train.jsonl`.
+
+---
+
+## Étape 4 — Merger et splitter les chunks
+
+```bash
+python tiny_mix_and_split.py \
+  --input_root refined \
+  --output_root merged \
+  --num_split 1
+```
+
+Génère `merged/train/train_0.jsonl`, le fichier attendu par `main.py`.
+
+---
+
+## Étape 5 — Lancer l'entraînement
+
+```bash
+cd ../../amber-train
+
+python main.py \
+  --n_nodes 1 \
+  --n_devices_per_node 1 \
+  --per_device_batch_size 2 \
+  --accumulate_grad_batches 8 \
+  --accelerator cuda \
+  --precision "bf16-mixed" \
+  --data_dir ../amber-data-prep/redpajama_tiny/merged/train \
+  --run_wandb False
+```
+
+> `per_device_batch_size 2` est volontairement bas pour tenir dans les 8 Go de VRAM.  
+> `accumulate_grad_batches 8` simule un batch effectif de 16.
+
+---
+
+## Structure des dossiers attendue
+
+```
+amber-data-prep/
+  redpajama_tiny/
+    datasets/          ← téléchargé par download.py
+    refined/           ← généré par refine.py
+    merged/
+      train/
+        train_0.jsonl  ← utilisé par main.py ✅
+```
+
+---
+
+## Notes
+
+- Le modèle de base utilisé est `huggyllama/llama-7b` (~13 Go), téléchargé automatiquement par HuggingFace lors du premier lancement de `main.py`.
+- Les checkpoints sont sauvegardés dans `amber-train/workdir_amber-pico/`.
+- Pour reprendre un entraînement interrompu, relancer simplement la même commande : le script détecte automatiquement le dernier checkpoint.
