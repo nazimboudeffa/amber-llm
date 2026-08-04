@@ -23,6 +23,8 @@ pip install flash-attn --no-build-isolation
 
 > Si `flash-attn` échoue à la compilation, l'entraînement peut quand même fonctionner sans (performances légèrement réduites).
 
+> **Si ta version CUDA système est 11.8**, remplace `cu121` par `cu118` dans la commande ci-dessus.
+
 ---
 
 ## Étape 2 — Télécharger les données tiny
@@ -96,6 +98,42 @@ amber-data-prep/
       train/
         train_0.jsonl  ← utilisé par main.py ✅
 ```
+
+---
+
+## Dépannage — CUDA non détecté
+
+Si le script indique qu'il n'y a pas d'accélérateur CUDA disponible, voici comment diagnostiquer le problème.
+
+### 1. Vérifier que le GPU est visible
+
+```bash
+nvidia-smi
+```
+
+Si la commande échoue, le driver NVIDIA n'est pas actif → réinstaller le driver ou redémarrer la machine.
+
+### 2. Vérifier que PyTorch détecte CUDA
+
+```bash
+python -c "import torch; print(torch.cuda.is_available()); print(torch.version.cuda)"
+```
+
+Si le résultat est `False`, PyTorch a été installé sans support CUDA.
+
+### 3. Réinstaller PyTorch avec la bonne version CUDA
+
+Vérifie ta version CUDA système avec `nvcc --version` ou `nvidia-smi`, puis installe la version correspondante :
+
+```bash
+# Pour CUDA 12.1
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Pour CUDA 11.8
+pip install torch --index-url https://download.pytorch.org/whl/cu118
+```
+
+> Un simple `pip install torch` sans `--index-url` installe la version CPU uniquement.
 
 ---
 
