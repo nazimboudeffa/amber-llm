@@ -1,0 +1,9 @@
+torch>=2.1.1
+lightning>=2.1.2
+flash_attn>=2.3.3; platform_system != "Windows"
+transformers>=4.36.2
+fire
+pytz
+tqdm
+numpy
+wandb

@@ -1,0 +1,14 @@
+.venv/
+
+__pycache__/
+*.py[cod]
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+amber-data-prep/redpajama_v1/wikipedia/
+
+Thumbs.db
+.DS_Store
